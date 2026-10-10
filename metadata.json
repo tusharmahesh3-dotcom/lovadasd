@@ -1,0 +1,7 @@
+{
+  "name": "LandingForge",
+  "description": "RAG landing page generator that transforms plain English descriptions into live previews and exportable code.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

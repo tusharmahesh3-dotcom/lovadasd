@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Design tokens — matched to careercraftly.org                        */
+/* ------------------------------------------------------------------ */
+@theme {
+  --color-ink: #0a0a0a;
+  --color-ink-2: #5a5a72;
+  --color-muted: #9ca3af;
+  --color-line: #e8e8ee;
+  --color-brand: #3b82f6;
+  --color-brand-dark: #1d4ed8;
+  --color-brand-soft: #eef4ff;
+  --color-brand-mist: #f0f1ff;
+  --color-surface: #f5f6fa;
+  --color-paper: #ffffff;
+  --color-neu: #eceff4;
+  --color-neu-dark: #d0d4de;
+  --color-lilac: #818cf8;
+
+  --radius-card: 20px;
+  --radius-btn: 50px;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Plus Jakarta Sans", "Inter", -apple-system, sans-serif;
+
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.07), 0 1px 4px rgba(0, 0, 0, 0.04);
+  --shadow-sm2: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-lift: 0 12px 40px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-xl2: 0 24px 64px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.07);
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+/* Neumorphic surface, straight from the reference system */
+.lf-neu {
+  background: var(--color-neu);
+  box-shadow:
+    6px 6px 14px var(--color-neu-dark),
+    -6px -6px 14px var(--color-neu-light, #ffffff);
+}
+.lf-neu-inset {
+  background: var(--color-paper);
+  box-shadow:
+    inset 3px 3px 7px rgba(208, 212, 222, 0.55),
+    inset -3px -3px 7px #ffffff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d0d4de;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.lf-scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+@keyframes lf-pulse-soft {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.lf-step-active {
+  animation: lf-pulse-soft 1.2s ease-in-out infinite;
+}
+
+@keyframes lf-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.lf-rise {
+  animation: lf-fade-up 0.4s ease-out both;
+}
