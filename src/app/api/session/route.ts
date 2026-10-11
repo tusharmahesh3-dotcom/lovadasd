@@ -2,6 +2,7 @@ import { getOrCreateSession, resolveSessionId, toQuota } from "@/lib/session";
 import { ensureKnowledgeBase } from "@/lib/rag/ingest";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET(req: Request) {
   const sessionId = resolveSessionId(req);

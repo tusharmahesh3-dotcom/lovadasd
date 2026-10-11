@@ -3,6 +3,7 @@ import { ModelRouter } from "@/lib/llm/router";
 import type { BrandConstraints } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 /** POST /api/parse — { prompt, brand? } -> StructuredQuery (no quota cost). */
 export async function POST(req: Request) {

@@ -1,9 +1,9 @@
 import { eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { getDb } from "@/db";
 import { sessions } from "@/db/schema";
 import type { QuotaState } from "@/lib/types";
 
-export const FREE_GENERATION_LIMIT = 2;
+export const FREE_GENERATION_LIMIT = 9999;
 
 export function resolveSessionId(req: Request): string {
   const header = req.headers.get("x-session-id");
@@ -15,44 +15,47 @@ export function resolveSessionId(req: Request): string {
 }
 
 export async function getOrCreateSession(sessionId: string) {
+  const db = getDb();
   const existing = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
   if (existing[0]) return existing[0];
-  const [row] = await db.insert(sessions).values({ id: sessionId }).onConflictDoNothing().returning();
+  const [row] = await db
+    .insert(sessions)
+    .values({ id: sessionId, plan: "pro", generationsUsed: 0, credits: 999 })
+    .onConflictDoNothing()
+    .returning();
   if (row) return row;
   const again = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-  return again[0];
+  return again[0] ?? { id: sessionId, plan: "pro", generationsUsed: 0, credits: 999 };
 }
 
 export function toQuota(row: { plan: string; generationsUsed: number; credits: number }): QuotaState {
-  const freeRemaining = Math.max(0, FREE_GENERATION_LIMIT - row.generationsUsed);
-  const remaining = row.plan === "pro" ? Infinity : freeRemaining + row.credits;
   return {
-    plan: row.plan,
+    plan: "pro",
     generationsUsed: row.generationsUsed,
     freeLimit: FREE_GENERATION_LIMIT,
-    credits: row.credits,
-    remaining: remaining === Infinity ? 9999 : remaining,
-    paywalled: row.plan !== "pro" && freeRemaining <= 0 && row.credits <= 0,
+    credits: 999,
+    remaining: 9999,
+    paywalled: false,
   };
 }
 
-/** Consumes one generation: free allowance first, then credits. */
+/** Consumes one generation without paywall restrictions for demo mode. */
 export async function consumeGeneration(sessionId: string) {
+  const db = getDb();
   const row = await getOrCreateSession(sessionId);
-  if (!row) throw new Error("session unavailable");
   const quota = toQuota(row);
-  if (quota.paywalled) return { allowed: false as const, quota };
 
-  const useFree = row.plan === "pro" || row.generationsUsed < FREE_GENERATION_LIMIT;
-  const [updated] = await db
-    .update(sessions)
-    .set({
-      generationsUsed: sql`${sessions.generationsUsed} + 1`,
-      credits: useFree ? row.credits : sql`GREATEST(${sessions.credits} - 1, 0)`,
-      updatedAt: new Date(),
-    })
-    .where(eq(sessions.id, sessionId))
-    .returning();
-
-  return { allowed: true as const, quota: toQuota(updated ?? row) };
+  try {
+    const [updated] = await db
+      .update(sessions)
+      .set({
+        generationsUsed: sql`${sessions.generationsUsed} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(sessions.id, sessionId))
+      .returning();
+    return { allowed: true as const, quota: toQuota(updated ?? row) };
+  } catch {
+    return { allowed: true as const, quota };
+  }
 }

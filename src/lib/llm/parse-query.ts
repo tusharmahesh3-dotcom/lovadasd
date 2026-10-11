@@ -193,51 +193,7 @@ requiredSections (array from ${SECTION_TYPES.join("|")}), conversionPattern (${C
 export async function parseQuery(
   prompt: string,
   brand: BrandConstraints,
-  router: ModelRouter,
+  _router?: ModelRouter,
 ): Promise<StructuredQuery> {
-  return router.run<StructuredQuery>(
-    "query_parsing",
-    async (model) => {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: SYSTEM },
-            { role: "user", content: prompt },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(`openai ${res.status}`);
-      const json = (await res.json()) as { choices: { message: { content: string } }[] };
-      const parsed = JSON.parse(json.choices[0].message.content) as Partial<StructuredQuery>;
-      const fallback = localParse(prompt, brand);
-      const sections = (parsed.requiredSections ?? []).filter((s): s is SectionType =>
-        (SECTION_TYPES as readonly string[]).includes(s),
-      );
-      return {
-        ...fallback,
-        ...parsed,
-        industry: (INDUSTRIES as readonly string[]).includes(parsed.industry ?? "")
-          ? (parsed.industry as Industry)
-          : fallback.industry,
-        tone: brand.toneOverride ?? ((TONES as readonly string[]).includes(parsed.tone ?? "") ? (parsed.tone as Tone) : fallback.tone),
-        conversionPattern: (CONVERSION_PATTERNS as readonly string[]).includes(parsed.conversionPattern ?? "")
-          ? (parsed.conversionPattern as ConversionPattern)
-          : fallback.conversionPattern,
-        requiredSections: sections.length >= 3 ? sections : fallback.requiredSections,
-        productName: brand.logoText?.trim() || parsed.productName || fallback.productName,
-        brandConstraints: brand,
-        confidence: 0.93,
-        parsedBy: "gpt-4o-mini",
-      };
-    },
-    () => localParse(prompt, brand),
-  );
+  return localParse(prompt, brand);
 }

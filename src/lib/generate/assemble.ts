@@ -192,14 +192,40 @@ function selectSection(
   return plan.rank === 0 ? scored[0].s : (scored[idx] ?? scored[0]).s;
 }
 
+import type { AiGeneratedContent } from "@/lib/ai/gemini";
+
 export function composeVariant(
   query: StructuredQuery,
   bySection: Map<SectionType, RetrievedSection[]>,
   plan: VariantPlan,
+  aiContent?: AiGeneratedContent | null,
 ): GeneratedVariant {
   const tone = plan.toneShift ?? query.brandConstraints.toneOverride ?? query.tone;
   const tokens = solveDesignTokens(query, tone);
   const copy = buildCopyTokens(query, { seed: `${query.productName}:${plan.id}`, toneShift: tone, angle: plan.angle });
+
+  // Apply AI-generated website content from Anthropic Claude
+  if (aiContent) {
+    if (aiContent.headline) copy.headline = aiContent.headline;
+    if (aiContent.subheadline) copy.subheadline = aiContent.subheadline;
+    if (aiContent.badge) copy.eyebrow = aiContent.badge;
+    if (aiContent.ctaText) copy.cta_primary = aiContent.ctaText;
+    if (aiContent.secondaryCtaText) copy.cta_secondary = aiContent.secondaryCtaText;
+    if (aiContent.features && aiContent.features.length) {
+      aiContent.features.forEach((f, i) => {
+        copy[`feature_${i + 1}_title`] = f.title;
+        copy[`feature_${i + 1}_desc`] = f.description;
+      });
+    }
+    if (aiContent.testimonials && aiContent.testimonials.length) {
+      aiContent.testimonials.forEach((t, i) => {
+        copy[`quote_${i + 1}`] = t.quote;
+        copy[`author_${i + 1}`] = t.author;
+        copy[`role_${i + 1}`] = `${t.role}, ${t.company}`;
+      });
+    }
+  }
+
   // Real photography per variant, keyed by industry + variant offset.
   const mediaSeed = VARIANT_PLANS.findIndex((p) => p.id === plan.id);
   Object.assign(copy, mediaTokens(query.industry, Math.max(0, mediaSeed)));
@@ -207,6 +233,9 @@ export function composeVariant(
   const used = new Set<string>();
   const htmlParts: string[] = [];
   const cssParts: string[] = [tokensToCss(tokens), SHARED_CSS];
+  if (aiContent?.customCss) {
+    cssParts.push(aiContent.customCss);
+  }
   const sectionIds: string[] = [];
   const layoutSignature: string[] = [];
 

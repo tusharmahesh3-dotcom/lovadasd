@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EXAMPLE_PROMPTS, MODEL_OPTIONS, type GenerateResult, type ModelChoice, type PaywallInfo } from "./types";
+import { EXAMPLE_PROMPTS, MODEL_OPTIONS, type GenerateResult, type ModelChoice } from "./types";
 import type { BrandConstraints, QuotaState, Tone } from "@/lib/types";
 
 const PIPELINE_STEPS = ["Reading your description", "Matching sections from the library", "Rendering your page"];
@@ -36,7 +36,6 @@ export default function Generator() {
   const [activeVariant, setActiveVariant] = useState(0);
   const [viewport, setViewport] = useState<(typeof VIEWPORTS)[number]["id"]>("desktop");
   const [quota, setQuota] = useState<QuotaState | null>(null);
-  const [paywall, setPaywall] = useState<PaywallInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +58,6 @@ export default function Generator() {
     setLoading(true);
     setStep(0);
     setError(null);
-    setPaywall(null);
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -67,11 +65,6 @@ export default function Generator() {
         body: JSON.stringify({ prompt, brand, model }),
       });
       const data = await res.json();
-      if (res.status === 402) {
-        setPaywall({ message: data.message, quota: data.quota });
-        setQuota(data.quota);
-        return;
-      }
       if (!res.ok) throw new Error(data.detail ?? data.error ?? "generation failed");
       setResult(data as GenerateResult);
       setActiveVariant(0);
@@ -84,26 +77,9 @@ export default function Generator() {
     }
   }
 
-  async function buyPack(pack: string) {
-    const res = await fetch("/api/billing/checkout", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-session-id": sessionId() },
-      body: JSON.stringify({ pack }),
-    });
-    const data = await res.json();
-    if (data.checkoutUrl) {
-      window.location.assign(data.checkoutUrl as string);
-      return;
-    }
-    setQuota(data.quota ?? quota);
-    setPaywall(null);
-  }
-
   const remainingLabel = useMemo(() => {
-    if (!quota) return "";
-    if (quota.plan === "pro") return "Unlimited generations";
-    return `${quota.remaining} free generation${quota.remaining === 1 ? "" : "s"} left`;
-  }, [quota]);
+    return "Unlimited AI website generations";
+  }, []);
 
   return (
     <main className="mx-auto max-w-5xl px-6 pb-8 pt-14">
@@ -174,8 +150,7 @@ export default function Generator() {
           </div>
           {model !== "auto" && (
             <p className="mt-2 text-[11px] leading-relaxed text-muted">
-              Uses {MODEL_OPTIONS.find((m) => m.id === model)!.hint.split("—")[0].trim()} when its API key is
-              configured. Otherwise the built-in engine renders your page so you always get a preview.
+              Applies {MODEL_OPTIONS.find((m) => m.id === model)!.label} layout rules using the built-in design engine.
             </p>
           )}
         </div>
@@ -331,37 +306,7 @@ export default function Generator() {
         </section>
       )}
 
-      {/* ------------------------------- PAYWALL ----------------------------- */}
-      {paywall && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-[#0a0a0a]/30 p-5 backdrop-blur-sm">
-          <div className="lf-rise w-full max-w-md rounded-card border border-line bg-paper p-6 shadow-xl2">
-            <h3 className="font-display text-xl font-bold tracking-tight text-ink">You&apos;ve used your free pages</h3>
-            <p className="mt-2 text-[13.5px] leading-relaxed text-ink-2">{paywall.message}</p>
-            <div className="mt-5 grid gap-2.5">
-              {[
-                { id: "starter", title: "Starter", price: "$12", desc: "10 generation credits" },
-                { id: "builder", title: "Builder", price: "$39", desc: "40 generation credits" },
-                { id: "pro", title: "Pro", price: "$49/mo", desc: "Unlimited generations" },
-              ].map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => buyPack(p.id)}
-                  className="flex items-center justify-between rounded-[16px] border border-line bg-surface px-4 py-3 text-left shadow-sm2 transition hover:border-brand/40 hover:bg-brand-soft"
-                >
-                  <span>
-                    <span className="block text-[14px] font-semibold text-ink">{p.title}</span>
-                    <span className="block text-[12px] text-muted">{p.desc}</span>
-                  </span>
-                  <span className="font-display text-[15px] font-bold text-brand-dark">{p.price}</span>
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setPaywall(null)} className="mt-4 text-[12.5px] text-ink-2 hover:text-brand-dark">
-              ← Back
-            </button>
-          </div>
-        </div>
-      )}
+
 
       <style>{`.lf-input{width:100%;border-radius:12px;border:1px solid #e8e8ee;background:#fff;padding:.45rem .65rem;font-size:12.5px;color:#0a0a0a;outline:none}
 .lf-input:focus{border-color:rgba(59,130,246,.55);box-shadow:0 0 0 3px rgba(59,130,246,.12)}`}</style>

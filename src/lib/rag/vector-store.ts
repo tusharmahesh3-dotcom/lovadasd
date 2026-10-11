@@ -1,20 +1,30 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
-import { kbSections } from "@/db/schema";
-import type { KbSection } from "@/db/schema";
+import { SEED_SECTIONS } from "@/lib/kb/sections";
+import { buildSectionPayload } from "@/lib/rag/ingest";
 import type { SectionType } from "@/lib/types";
 
-/**
- * VectorStore adapter.
- *
- * Production target: Qdrant Cloud with two parallel collections
- *   - `sections_text`   (voyage-3,  cosine, 256d)
- *   - `sections_visual` (SigLIP,    cosine, 256d)
- * sharing an identical payload shape (the metadata object below), so metadata
- * pre-filtering happens inside the engine.
- *
- * Default runtime: Postgres (canonical store). Switch with VECTOR_BACKEND=qdrant.
- */
+export interface KbSection {
+  id: string;
+  externalId: string;
+  html: string;
+  css: string;
+  copyText: string;
+  screenshotUrl: string;
+  sectionType: string;
+  industry: string;
+  layoutType: string;
+  tone: string;
+  colorPalette: string[];
+  conversionPattern: string;
+  complexity: string;
+  tags: string[];
+  textEmbedding: number[];
+  visualEmbedding: number[];
+  embeddingModelText: string;
+  embeddingModelVisual: string;
+  termFrequencies: Record<string, number>;
+  tokenCount: number;
+  qualityScore: number;
+}
 
 export interface SectionFilter {
   sectionType?: SectionType;
@@ -26,95 +36,50 @@ export interface SectionFilter {
 
 export interface VectorStore {
   readonly backend: string;
-  /** Metadata pre-filter (stage 1 of the retrieval pipeline). */
   prefilter(filter: SectionFilter, limit?: number): Promise<KbSection[]>;
   countAll(): Promise<number>;
+  getAll(): KbSection[];
 }
 
-class PostgresVectorStore implements VectorStore {
-  readonly backend = "postgres";
+let cachedSections: KbSection[] | null = null;
+
+function loadSections(): KbSection[] {
+  if (!cachedSections) {
+    cachedSections = SEED_SECTIONS.map((s) => ({
+      id: s.externalId,
+      ...buildSectionPayload(s),
+    }));
+  }
+  return cachedSections;
+}
+
+class InMemoryVectorStore implements VectorStore {
+  readonly backend = "in-memory-rag";
 
   async prefilter(filter: SectionFilter, limit = 200): Promise<KbSection[]> {
-    const clauses = [];
-    if (filter.sectionType) clauses.push(eq(kbSections.sectionType, filter.sectionType));
-    if (filter.industry) clauses.push(eq(kbSections.industry, filter.industry));
-    if (filter.tone) clauses.push(eq(kbSections.tone, filter.tone));
-    if (filter.layoutType) clauses.push(eq(kbSections.layoutType, filter.layoutType));
-    if (filter.conversionPattern) clauses.push(eq(kbSections.conversionPattern, filter.conversionPattern));
-
-    const rows = await db
-      .select()
-      .from(kbSections)
-      .where(clauses.length ? and(...clauses) : undefined)
-      .limit(limit);
-    return rows;
+    let list = loadSections();
+    if (filter.sectionType) list = list.filter((s) => s.sectionType === filter.sectionType);
+    if (filter.industry) list = list.filter((s) => s.industry === filter.industry || s.industry === "generic");
+    if (filter.tone) list = list.filter((s) => s.tone === filter.tone);
+    if (filter.layoutType) list = list.filter((s) => s.layoutType === filter.layoutType);
+    if (filter.conversionPattern) list = list.filter((s) => s.conversionPattern === filter.conversionPattern);
+    return list.slice(0, limit);
   }
 
   async countAll(): Promise<number> {
-    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(kbSections);
-    return row?.n ?? 0;
-  }
-}
-
-/**
- * Qdrant adapter — enabled when VECTOR_BACKEND=qdrant and QDRANT_URL is set.
- * Hydrates structure/CSS from Postgres (Qdrant payloads stay small).
- */
-class QdrantVectorStore implements VectorStore {
-  readonly backend = "qdrant";
-  private pg = new PostgresVectorStore();
-
-  constructor(
-    private url: string,
-    private apiKey?: string,
-  ) {}
-
-  async prefilter(filter: SectionFilter, limit = 200): Promise<KbSection[]> {
-    try {
-      const must = Object.entries({
-        section_type: filter.sectionType,
-        industry: filter.industry,
-        tone: filter.tone,
-        layout_type: filter.layoutType,
-        conversion_pattern: filter.conversionPattern,
-      })
-        .filter(([, v]) => Boolean(v))
-        .map(([key, value]) => ({ key, match: { value } }));
-
-      const res = await fetch(`${this.url}/collections/sections_text/points/scroll`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey ? { "api-key": this.apiKey } : {}),
-        },
-        body: JSON.stringify({ filter: { must }, limit, with_payload: true }),
-      });
-      if (!res.ok) throw new Error(`qdrant ${res.status}`);
-      const json = (await res.json()) as {
-        result: { points: { payload: { external_id: string } }[] };
-      };
-      const ids = json.result.points.map((p) => p.payload.external_id);
-      if (!ids.length) return [];
-      return db.select().from(kbSections).where(inArray(kbSections.externalId, ids));
-    } catch {
-      // graceful degradation keeps generation success rate high
-      return this.pg.prefilter(filter, limit);
-    }
+    return loadSections().length;
   }
 
-  countAll() {
-    return this.pg.countAll();
+  getAll(): KbSection[] {
+    return loadSections();
   }
 }
 
 let store: VectorStore | null = null;
 
 export function getVectorStore(): VectorStore {
-  if (store) return store;
-  if (process.env.VECTOR_BACKEND === "qdrant" && process.env.QDRANT_URL) {
-    store = new QdrantVectorStore(process.env.QDRANT_URL, process.env.QDRANT_API_KEY);
-  } else {
-    store = new PostgresVectorStore();
+  if (!store) {
+    store = new InMemoryVectorStore();
   }
   return store;
 }

@@ -1,17 +1,15 @@
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { kbSections } from "@/db/schema";
+import { getVectorStore } from "@/lib/rag/vector-store";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 /**
- * Deterministic wireframe thumbnail for a stored section — this is the asset
- * the visual encoder (SigLIP in production) consumes, and what the KB browser
- * renders as a preview.
+ * Deterministic wireframe thumbnail for a stored section.
  */
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const [row] = await db.select().from(kbSections).where(eq(kbSections.externalId, id)).limit(1);
+  const store = getVectorStore();
+  const row = store.getAll().find((s) => s.externalId === id);
   if (!row) return new Response("not found", { status: 404 });
 
   const [c1 = "#4f46e5", c2 = "#0f172a"] = row.colorPalette ?? [];

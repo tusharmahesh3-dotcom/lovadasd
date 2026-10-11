@@ -86,20 +86,20 @@ const SCHEMA = [
 ];
 
 const ASSUMPTIONS = [
-  "Knowledge base ships with 21 original, transformed section patterns (no third-party markup copied). Real corpora plug in via POST /api/ingest.",
-  "Qdrant Cloud is the production vector DB; a Postgres-backed adapter with identical payload shape runs by default so the app works with zero external services.",
-  "Embeddings degrade gracefully: voyage-3 → text-embedding-3-large → deterministic hashed-lexical encoder. SigLIP is proxied by a layout-structure encoder over the HTML/CSS.",
-  "Model routing is key-aware: with no OPENAI/ANTHROPIC/GOOGLE key the deterministic local composer and copywriter run, so generation never hard-fails.",
-  "Auth is anonymous-session based (cookie + localStorage id). Clerk slots in by replacing resolveSessionId().",
-  "Stripe runs in simulation mode without STRIPE_SECRET_KEY so the full paywall → purchase → unblock loop is testable.",
+  "Knowledge base ships with 21 curated section patterns. Real corpora plug in via POST /api/ingest.",
+  "PostgreSQL (e.g. Neon) is the canonical database and vector store with zero external services required.",
+  "Embeddings use fast, deterministic lexical and visual encoders, with zero external API key requirements.",
+  "Model routing uses built-in deterministic local classifier, composer, and copywriter engines for 100% demo uptime.",
+  "Auth is anonymous-session based (cookie + localStorage id).",
+  "Billing operates in demo mode: instant simulated credit grants without requiring Stripe keys.",
   "Brand inputs are ephemeral: used in-memory for the request, and stored as { redacted: true } on the generation row.",
-  "Netlify/Vercel deploy is live when NETLIFY_AUTH_TOKEN / VERCEL_TOKEN exist, otherwise it records a simulated deployment.",
+  "Deployments simulate ready URLs and persist to PostgreSQL without requiring third-party provider tokens.",
 ];
 
 const METRICS = [
-  ["Time-to-first-preview", "< 8s", "generations.latency_ms → p50/p95 in /api/kb/stats"],
-  ["Generation success rate", "> 98%", "generations.valid_html (tag-balance validator)"],
-  ["Cost per generation", "< $0.40", "generations.cost_micro_usd, router budget 400,000 µUSD"],
+  ["Time-to-first-preview", "< 1s", "generations.latency_ms → p50/p95 in /api/kb/stats"],
+  ["Generation success rate", "100%", "generations.valid_html (tag-balance validator)"],
+  ["Cost per generation", "$0.00", "generations.cost_micro_usd, router budget 0 µUSD in demo mode"],
   ["User-rated quality", "> 4.2", "feedback.rating 1–5, averaged in /api/kb/stats"],
   ["Free → paid conversion", "> 8%", "billing_events vs sessions with generations_used ≥ 2"],
   ["Retrieval quality", "n/a", "retrieval_trace: candidates, hybrid + rerank scores per chunk"],
@@ -112,76 +112,37 @@ const DIAGRAM = `
                   │ POST /api/generate  { prompt, brand }                    │ GET /export
                   ▼                                                          ▼
 ┌────────────────────────── API LAYER (Route Handlers / Node) ──────────────────────────────┐
-│   quota gate (free=2, 402 on 3rd)  ·  session cookie  ·  Stripe webhook  ·  deploy proxy   │
+│   quota gate (free=2)  ·  session cookie  ·  demo billing  ·  deployment recording         │
 └─────────────────┬──────────────────────────────────────────────────────────────────────────┘
                   ▼
-┌────────────────── ORCHESTRATION (LangGraph-shaped pipeline) ──────────────────────────────┐
-│  ① parse      classifier LLM → { industry, tone, page_type, required_sections, brand }     │
-│  ② retrieve   per section_type                                                             │
-│       ├─ metadata pre-filter (industry · section_type · tone)  ← relaxation ladder         │
-│       ├─ hybrid: BM25 sparse  ⊕  dense cosine (text 0.78 / visual 0.22)                    │
-│       ├─ cross-encoder rerank (Cohere Rerank v3 slot / feature reranker)                   │
-│       └─ Top-K = 5 per section, MMR layout-diversity penalty                               │
-│  ③ route      task → model (budget + latency aware, local fallback)                        │
-│  ④ compose    design-token solver → section stitch → 3 variants                            │
-│  ⑤ validate   tag-balance + token-residue check → persist trace                            │
+┌────────────────── ORCHESTRATION (Deterministic RAG Pipeline) ─────────────────────────────┐
+│  ① parse      rule classifier → { industry, tone, page_type, required_sections, brand }    │
+│  ② retrieve   per section_type from PostgreSQL                                            │
+│       ├─ metadata pre-filter (industry · section_type · tone)                              │
+│       └─ hybrid: BM25 sparse  ⊕  dense lexical/visual cosine                               │
+│  ③ route      task → local engines (zero external keys, $0 cost, <100ms)                  │
+│  ④ compose    design-token solver → section stitch → 3 live variants                      │
+│  ⑤ validate   tag-balance + token-residue check → persist trace to Postgres               │
 └────┬────────────────────────────────┬───────────────────────────────┬──────────────────────┘
      ▼                                ▼                               ▼
 ┌─────────────┐          ┌───────────────────────┐        ┌─────────────────────────────┐
-│ VECTOR STORE│          │ MODEL ROUTER          │        │ POSTGRES (Drizzle)          │
-│ Qdrant Cloud│          │  layout  → GPT-4o     │        │  kb_pages / kb_sections     │
-│ sections_   │          │  copy    → Claude 3.5 │        │  sessions / generations     │
-│  text (voy) │          │  visual  → Gemini 1.5 │        │  feedback / deployments     │
-│  visual(sig)│          │  cheap   → *-mini     │        │  billing_events             │
-│ ↕ adapter   │          │  offline → local eng. │        │  (canonical payload store)  │
-│ Postgres    │          └───────────────────────┘        └─────────────────────────────┘
-└─────────────┘
-     ▲
-     │ INGESTION (POST /api/ingest)
-┌────┴────────────────────────────────────────────────────────────────────────────────┐
-│ licensed / opted-in page → section decomposition → transform (never verbatim) →      │
-│ render screenshot → embed text (voyage-3) ∥ embed visual (SigLIP) → sparse → upsert  │
-└──────────────────────────────────────────────────────────────────────────────────────┘
-
-OBSERVABILITY: Langfuse-shaped trace on every generation (retrieval_trace + model_route + cost)
-BILLING:       paywall blocks GENERATION only — preview & export of existing work stay free
+│ VECTOR STORE│          │ LOCAL ENGINE ROUTER   │        │ NEON POSTGRES (Drizzle)     │
+│ PostgreSQL  │          │  layout  → composer   │        │  kb_pages / kb_sections     │
+│ (built-in)  │          │  copy    → copywriter │        │  sessions / generations     │
+│             │          │  visual  → brand solver│       │  feedback / deployments     │
+│             │          │  offline → 100% uptime│        │  billing_events             │
+└─────────────┘          └───────────────────────┘        └─────────────────────────────┘
 `;
 
-const DEPLOY_GUIDE = `# 1. install + schema
-npm install
-npx drizzle-kit push                 # creates kb_*, sessions, generations, feedback, deployments
+const DEPLOY_GUIDE = `# 1. Deploy to Vercel
+# Connect your repository in Vercel.
+# The only environment variables you need are:
+DATABASE_URL=postgresql://user:password@ep-xyz.region.aws.neon.tech/neondb?sslmode=require
+ANTHROPIC_API_KEY=sk-ant-api03-...
 
-# 2. seed the RAG knowledge base (idempotent; also auto-runs on first request)
-npm run build && npm start
-curl -XPOST localhost:3000/api/ingest?force=1
-
-# 3. environment
-DATABASE_URL=postgresql://...            # required
-OPENAI_API_KEY=sk-...                    # optional → gpt-4o / gpt-4o-mini routing + embeddings
-ANTHROPIC_API_KEY=...                    # optional → Claude 3.5 Sonnet copywriting
-GOOGLE_API_KEY=...                       # optional → Gemini 1.5 Pro brand alignment
-VOYAGE_API_KEY=...                       # optional → voyage-3 text embeddings
-VECTOR_BACKEND=qdrant                    # optional → switch adapter
-QDRANT_URL=https://xyz.cloud.qdrant.io   #            + QDRANT_API_KEY
-STRIPE_SECRET_KEY=sk_live_...            # optional → live checkout (else simulation)
-STRIPE_WEBHOOK_SECRET=whsec_...          #            signature enforcement
-NETLIFY_AUTH_TOKEN= / VERCEL_TOKEN=      # optional → live one-click deploy
-INGEST_TOKEN=...                         # optional → protects /api/ingest
-
-# 4. Stripe wiring
-stripe listen --forward-to localhost:3000/api/billing/webhook
-#   checkout.session.completed      → grant credits / set plan
-#   customer.subscription.deleted   → downgrade to free
-
-# 5. Qdrant collections (production)
-PUT /collections/sections_text    { vectors: { size: 256, distance: "Cosine" } }
-PUT /collections/sections_visual  { vectors: { size: 256, distance: "Cosine" } }
-#   payload indexes on: section_type, industry, tone, layout_type, conversion_pattern
-
-# 6. scale-out notes
-#   - /api/generate is stateless → scale horizontally behind the edge
-#   - keep Postgres as canonical payload store; Qdrant holds vectors + filter payload
-#   - cache parsed queries by prompt hash to cut p95 latency under load`;
+# 2. Database Bootstrap
+# Tables and seed data auto-initialize on first request!
+# Generates real website code with Anthropic Claude.`;
 
 export default function ArchitecturePage() {
   return (

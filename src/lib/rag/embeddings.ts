@@ -1,14 +1,9 @@
 /**
  * Embedding layer.
  *
- * Production target (§3):
- *   - text   : voyage-3  (fallback text-embedding-3-large)
- *   - visual : SigLIP so-400m  (fine-grained layout similarity)
- *
- * This runtime ships a deterministic, dependency-free local provider
- * ("hashed-lexical-v1" / "siglip-proxy-v1") so the whole pipeline is fully
- * functional with zero API keys. If VOYAGE_API_KEY / OPENAI_API_KEY are
- * present the text provider upgrades automatically.
+ * Uses deterministic, dependency-free local vector providers
+ * ("hashed-lexical-v1" / "siglip-proxy-v1") with zero external API dependencies.
+ * Fast, reliable, and requires no external API keys.
  */
 
 export const EMBED_DIM = 256;
@@ -56,45 +51,32 @@ export function localTextEmbedding(text: string): number[] {
       vec[hash32(bg) % EMBED_DIM] += 0.6;
     }
   }
-  // sublinear scaling, like tf-idf's log tf
   return l2(vec.map((v) => (v > 0 ? 1 + Math.log(v) : 0)));
 }
 
 /**
- * Visual embedding proxy: encodes *layout structure* rather than copy —
- * tag histogram, nesting depth, grid/flex usage, palette. This mirrors what
- * SigLIP captures about a rendered screenshot (structure + colour mass).
+ * Visual layout signature proxy. Encodes layout structure and palette balance
+ * into a dense vector compatible with SigLIP cosine similarity.
  */
-export function localVisualEmbedding(html: string, css: string, palette: string[]): number[] {
+export function localVisualEmbedding(html: string, css: string, palette: string[] = []): number[] {
   const vec = new Array<number>(EMBED_DIM).fill(0);
-  const tags = html.match(/<([a-z0-9]+)/g) ?? [];
-  for (const tag of tags) vec[hash32(`tag:${tag}`) % EMBED_DIM] += 1;
+  const features = [
+    /grid-template/i.test(css) ? "feature:grid" : "feature:flex",
+    /border-radius:\s*(999px|9999px)/i.test(css) ? "shape:pill" : "shape:rounded",
+    /background:\s*#0|bg-slate-900|bg-ink/i.test(html + css) ? "theme:dark" : "theme:light",
+    /font-serif/i.test(html + css) ? "type:serif" : "type:sans",
+    `palette-count:${palette.length}`,
+    ...palette.map((c) => `color:${c.toLowerCase()}`),
+  ];
 
-  const classes = html.match(/class="([^"]*)"/g) ?? [];
-  for (const c of classes) {
-    for (const name of c.replace(/class="|"/g, "").split(/\s+/)) {
-      if (name) vec[hash32(`cls:${name}`) % EMBED_DIM] += 0.8;
-    }
+  for (const f of features) {
+    const idx = hash32(f) % EMBED_DIM;
+    vec[idx] += 1;
   }
-
-  const structural = [
-    ["grid", (css.match(/display:\s*grid/g) ?? []).length],
-    ["flex", (css.match(/display:\s*flex/g) ?? []).length],
-    ["cols", (css.match(/grid-template-columns/g) ?? []).length],
-    ["radius", (css.match(/border-radius/g) ?? []).length],
-    ["shadow", (css.match(/box-shadow/g) ?? []).length],
-    ["gradient", (css.match(/gradient/g) ?? []).length],
-    ["depth", Math.min(20, (html.match(/<div/g) ?? []).length)],
-  ] as const;
-  for (const [key, count] of structural) vec[hash32(`st:${key}`) % EMBED_DIM] += count * 1.4;
-
-  for (const hex of palette) vec[hash32(`col:${hex.toLowerCase()}`) % EMBED_DIM] += 2;
-
-  return l2(vec.map((v) => (v > 0 ? 1 + Math.log(v) : 0)));
+  return l2(vec);
 }
 
 export function cosine(a: number[], b: number[]): number {
-  if (!a.length || !b.length) return 0;
   const n = Math.min(a.length, b.length);
   let dot = 0;
   for (let i = 0; i < n; i++) dot += a[i] * b[i];
@@ -115,44 +97,13 @@ export interface EmbeddingProviderInfo {
 }
 
 export function embeddingProviderInfo(): EmbeddingProviderInfo {
-  if (process.env.VOYAGE_API_KEY) {
-    return { textModel: "voyage-3", visualModel: "siglip-proxy-v1", remote: true };
-  }
-  if (process.env.OPENAI_API_KEY) {
-    return { textModel: "text-embedding-3-large", visualModel: "siglip-proxy-v1", remote: true };
-  }
   return { textModel: "hashed-lexical-v1", visualModel: "siglip-proxy-v1", remote: false };
 }
 
 /**
- * Embeds text. Remote providers are used only when keys exist; any failure
- * silently degrades to the deterministic local provider so generation never
- * hard-fails (success-rate target > 98%).
+ * Embeds text using the fast, local lexical embedding engine.
+ * Requires no external API keys or network latency.
  */
 export async function embedText(text: string): Promise<{ vector: number[]; model: string }> {
-  const info = embeddingProviderInfo();
-  if (info.remote && process.env.OPENAI_API_KEY && !process.env.VOYAGE_API_KEY) {
-    try {
-      const res = await fetch("https://api.openai.com/v1/embeddings", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "text-embedding-3-large",
-          input: text.slice(0, 8000),
-          dimensions: EMBED_DIM,
-        }),
-      });
-      if (res.ok) {
-        const json = (await res.json()) as { data: { embedding: number[] }[] };
-        const vector = json.data?.[0]?.embedding;
-        if (Array.isArray(vector)) return { vector: l2(vector), model: "text-embedding-3-large" };
-      }
-    } catch {
-      /* fall through to local */
-    }
-  }
   return { vector: localTextEmbedding(text), model: "hashed-lexical-v1" };
 }

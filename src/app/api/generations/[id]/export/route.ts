@@ -5,6 +5,7 @@ import { exportAs } from "@/lib/generate/assemble";
 import type { GeneratedVariant } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 /**
  * GET /api/generations/:id/export?variant=primary&format=html|react-tailwind|vue|css

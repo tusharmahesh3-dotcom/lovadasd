@@ -1,4 +1,4 @@
-import type { KbSection } from "@/db/schema";
+import type { KbSection } from "@/lib/rag/vector-store";
 import { cosine, localTextEmbedding, localVisualEmbedding, tokenize } from "@/lib/rag/embeddings";
 import { getVectorStore, type SectionFilter } from "@/lib/rag/vector-store";
 import type {

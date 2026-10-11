@@ -3,6 +3,7 @@ import { consumeGeneration, getOrCreateSession, resolveSessionId, toQuota } from
 import type { BrandConstraints } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 export const maxDuration = 60;
 
 /**
@@ -10,7 +11,7 @@ export const maxDuration = 60;
  * body: { prompt: string, brand?: BrandConstraints, k?: number }
  * 402  -> paywall (3rd generation onwards on the free tier)
  */
-const MODELS = ["auto", "gemini", "gpt", "claude", "fast"] as const;
+const MODELS = ["auto", "gemini-pro", "gemini-flash"] as const;
 
 export async function POST(req: Request) {
   const sessionId = resolveSessionId(req);

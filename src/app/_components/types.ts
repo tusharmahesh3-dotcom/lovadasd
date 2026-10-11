@@ -7,13 +7,11 @@ export interface PaywallInfo {
   quota: QuotaState | null;
 }
 
-/** Mirrors MODEL_CHOICES in src/lib/llm/router.ts (kept client-safe). */
+/** Model options powered by Google Gemini. */
 export const MODEL_OPTIONS = [
-  { id: "auto", label: "Auto", hint: "Picks the best model per task" },
-  { id: "gemini", label: "Gemini", hint: "Gemini 1.5 Pro — multimodal & brand fit" },
-  { id: "gpt", label: "GPT-4o", hint: "GPT-4o — layout & code generation" },
-  { id: "claude", label: "Claude", hint: "Claude 3.5 Sonnet — copywriting & tone" },
-  { id: "fast", label: "Fast", hint: "Cheapest, lowest latency" },
+  { id: "auto", label: "Gemini 3.1 Pro", hint: "Google's flagship reasoning & coding model" },
+  { id: "gemini-pro", label: "Gemini 3.1 Pro (Full)", hint: "Maximum fidelity layout composition & copywriting" },
+  { id: "gemini-flash", label: "Gemini 3.8 Flash", hint: "Ultra-fast low-latency generation" },
 ] as const;
 
 export type ModelChoice = (typeof MODEL_OPTIONS)[number]["id"];

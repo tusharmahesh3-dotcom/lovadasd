@@ -1,16 +1,12 @@
-import { db } from "@/db";
-import { kbSections, type KbSection } from "@/db/schema";
-import { ensureKnowledgeBase } from "@/lib/rag/ingest";
 import { embeddingProviderInfo } from "@/lib/rag/embeddings";
-import { getVectorStore } from "@/lib/rag/vector-store";
+import { getVectorStore, type KbSection } from "@/lib/rag/vector-store";
 import { SECTION_TYPES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function KnowledgeBasePage({ searchParams }: { searchParams: Promise<{ type?: string }> }) {
   const { type } = await searchParams;
-  await ensureKnowledgeBase();
-  const rows: KbSection[] = await db.select().from(kbSections);
+  const rows: KbSection[] = getVectorStore().getAll();
   const filtered = type ? rows.filter((r: KbSection) => r.sectionType === type) : rows;
   const info = embeddingProviderInfo();
 

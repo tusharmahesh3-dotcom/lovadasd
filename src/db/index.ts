@@ -1,47 +1,52 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { getTableName } from "drizzle-orm";
 import { Pool } from "pg";
+import * as schema from "./schema";
 
-const databaseUrl = process.env.DATABASE_URL;
+let poolInstance: Pool | null = null;
+let dbInstance: any = null;
+let tablesInitialized = false;
 
-let realDb: any = null;
-let pool: Pool | null = null;
-
-if (databaseUrl) {
+async function bootstrapTables(p: Pool) {
+  if (tablesInitialized) return;
   try {
-    const globalForDb = globalThis as typeof globalThis & {
-      __arenaNextJsPostgresqlPool?: Pool;
-    };
-    pool =
-      globalForDb.__arenaNextJsPostgresqlPool ??
-      new Pool({
-        connectionString: databaseUrl,
-        connectionTimeoutMillis: 3000,
-      });
-    if (process.env.NODE_ENV !== "production") {
-      globalForDb.__arenaNextJsPostgresqlPool = pool;
-    }
-    realDb = drizzle(pool);
+    await p.query(`
+      CREATE TABLE IF NOT EXISTS generations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        parsed_query JSONB NOT NULL,
+        variants JSONB NOT NULL,
+        model_route JSONB NOT NULL,
+        retrieval_trace JSONB NOT NULL DEFAULT '[]'::jsonb,
+        status TEXT NOT NULL DEFAULT 'succeeded',
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        cost_micro_usd INTEGER NOT NULL DEFAULT 0,
+        valid_html BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        plan TEXT NOT NULL DEFAULT 'pro',
+        generations_used INTEGER NOT NULL DEFAULT 0,
+        credits INTEGER NOT NULL DEFAULT 999,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    tablesInitialized = true;
   } catch (err) {
-    console.warn("[AI Studio] Postgres pool init failed; using in-memory store:", err);
+    console.warn("[Postgres] Table bootstrap note:", (err as Error).message);
   }
 }
 
-export { pool };
-
 /**
- * In-memory fallback data store for AI Studio container environment.
- * Allows the full RAG pipeline, session quotas, and UI to run seamlessly
- * without requiring an external PostgreSQL instance.
+ * In-memory fallback data store for build time or offline execution.
  */
 interface MemoryStore {
-  kb_pages: any[];
-  kb_sections: any[];
-  sessions: Map<string, any>;
   generations: any[];
-  feedback: any[];
-  deployments: any[];
-  billing_events: any[];
+  sessions: Map<string, any>;
 }
 
 const globalForStore = globalThis as typeof globalThis & {
@@ -50,13 +55,8 @@ const globalForStore = globalThis as typeof globalThis & {
 
 if (!globalForStore.__landingForgeMemoryStore) {
   globalForStore.__landingForgeMemoryStore = {
-    kb_pages: [],
-    kb_sections: [],
-    sessions: new Map(),
     generations: [],
-    feedback: [],
-    deployments: [],
-    billing_events: [],
+    sessions: new Map(),
   };
 }
 
@@ -116,25 +116,22 @@ function rowMatches(row: any, cond: any): boolean {
   return true;
 }
 
-function resolveTableName(table: any): keyof MemoryStore {
+function resolveTableName(table: any): "generations" | "sessions" {
   try {
     const name = getTableName(table);
-    if (name in mem) return name as keyof MemoryStore;
-  } catch {
-    // fallback
+    if (name === "generations" || name === "sessions") return name;
+  } catch {}
+  if (table && table._ && table._.name && (table._.name === "generations" || table._.name === "sessions")) {
+    return table._.name;
   }
-  if (table && table._ && table._.name && table._.name in mem) {
-    return table._.name as keyof MemoryStore;
-  }
-  return "kb_sections";
+  return "generations";
 }
 
-function createSelectBuilder(fields?: any) {
+function createMockSelect(fields?: any, real?: any) {
   let targetTable: any = null;
   let whereCond: any = null;
   let limitCount: number | null = null;
   let offsetCount: number | null = null;
-  let groupByCol: any = null;
 
   const builder: any = {
     from(table: any) {
@@ -153,101 +150,38 @@ function createSelectBuilder(fields?: any) {
       offsetCount = n;
       return builder;
     },
-    groupBy(col: any) {
-      groupByCol = col;
-      return builder;
-    },
     orderBy() {
       return builder;
     },
     then(onfulfilled: (res: any) => any, onrejected?: (err: any) => any) {
       const execute = async () => {
-        if (realDb) {
+        if (real) {
           try {
-            let q = realDb.select(fields).from(targetTable);
+            let q = real.select(fields).from(targetTable);
             if (whereCond) q = q.where(whereCond);
-            if (groupByCol) q = q.groupBy(groupByCol);
             if (offsetCount !== null) q = q.offset(offsetCount);
             if (limitCount !== null) q = q.limit(limitCount);
             return await q;
           } catch (err) {
-            console.warn("[AI Studio] Postgres select failed; falling back to in-memory:", err);
+            console.warn("[Postgres] query note:", (err as Error).message);
           }
         }
 
         const tableName = resolveTableName(targetTable);
-        let items: any[] = [];
-        if (tableName === "sessions") {
-          items = Array.from(mem.sessions.values());
-        } else {
-          items = (mem[tableName] as any[]) || [];
-        }
-
+        let items: any[] = tableName === "sessions" ? Array.from(mem.sessions.values()) : mem.generations;
         let filtered = whereCond ? items.filter((row) => rowMatches(row, whereCond)) : [...items];
 
-        // GroupBy aggregation
-        if (groupByCol) {
-          const colName = groupByCol.name || "sectionType";
-          const counts = new Map<string, number>();
-          for (const row of filtered) {
-            const key = String(getField(row, colName) ?? "unknown");
-            counts.set(key, (counts.get(key) || 0) + 1);
-          }
-          const res = Array.from(counts.entries()).map(([k, count]) => {
-            if (colName.includes("industry")) return { industry: k, n: count };
-            return { sectionType: k, n: count };
-          });
-          return res;
-        }
-
-        // Count aggregate { n: count }
-        if (fields && typeof fields === "object" && "n" in fields && Object.keys(fields).length <= 2) {
-          if ("avg" in fields) {
-            const ratings = filtered.map((f) => f.rating || 0).filter(Boolean);
-            const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
-            return [{ avg, n: filtered.length }];
-          }
-          return [{ n: filtered.length }];
-        }
-
-        // Stats aggregate for generations
-        if (fields && typeof fields === "object" && "total" in fields) {
-          const latencies = filtered.map((g) => g.latencyMs || 0).sort((a, b) => a - b);
-          const p50 = latencies[Math.floor(latencies.length * 0.5)] || 0;
-          const p95 = latencies[Math.floor(latencies.length * 0.95)] || 0;
-          const valid = filtered.filter((g) => g.validHtml !== false).length;
-          const validRate = filtered.length ? valid / filtered.length : 1;
-          const totalCost = filtered.reduce((s, g) => s + (g.costMicroUsd || 0), 0);
-          const avgCost = filtered.length ? totalCost / filtered.length : 0;
-          return [
-            {
-              total: filtered.length,
-              p50,
-              p95,
-              validRate,
-              avgCost,
-            },
-          ];
-        }
-
-        if (offsetCount !== null) {
-          filtered = filtered.slice(offsetCount);
-        }
-        if (limitCount !== null) {
-          filtered = filtered.slice(0, limitCount);
-        }
-
+        if (offsetCount !== null) filtered = filtered.slice(offsetCount);
+        if (limitCount !== null) filtered = filtered.slice(0, limitCount);
         return filtered;
       };
-
       return execute().then(onfulfilled, onrejected);
     },
   };
-
   return builder;
 }
 
-function createInsertBuilder(table: any) {
+function createMockInsert(table: any, real?: any) {
   let insertValues: any = null;
   let conflictMode: "none" | "doNothing" | "doUpdate" = "none";
   let conflictUpdateSet: any = null;
@@ -271,14 +205,14 @@ function createInsertBuilder(table: any) {
     },
     then(onfulfilled: (res: any) => any, onrejected?: (err: any) => any) {
       const execute = async () => {
-        if (realDb) {
+        if (real) {
           try {
-            let q = realDb.insert(table).values(insertValues);
+            let q = real.insert(table).values(insertValues);
             if (conflictMode === "doNothing") q = q.onConflictDoNothing();
             else if (conflictMode === "doUpdate") q = q.onConflictDoUpdate({ target: table.id, set: conflictUpdateSet });
             return await q.returning();
           } catch (err) {
-            console.warn("[AI Studio] Postgres insert failed; falling back to in-memory:", err);
+            console.warn("[Postgres] insert note:", (err as Error).message);
           }
         }
 
@@ -299,55 +233,23 @@ function createInsertBuilder(table: any) {
               inserted.push(existing);
               continue;
             }
-            const sessionObj = {
-              plan: "free",
-              generationsUsed: 0,
-              credits: 0,
-              updatedAt: new Date(),
-              ...existing,
-              ...row,
-            };
-            mem.sessions.set(row.id, sessionObj);
-            inserted.push(sessionObj);
-          } else if (tableName === "kb_pages") {
-            const idx = mem.kb_pages.findIndex((p) => p.slug === row.slug);
-            if (idx >= 0) {
-              if (conflictMode === "doUpdate" && conflictUpdateSet) {
-                mem.kb_pages[idx] = { ...mem.kb_pages[idx], ...conflictUpdateSet };
-              }
-              inserted.push(mem.kb_pages[idx]);
-            } else {
-              mem.kb_pages.push(row);
-              inserted.push(row);
-            }
-          } else if (tableName === "kb_sections") {
-            const idx = mem.kb_sections.findIndex((s) => s.externalId === row.externalId);
-            if (idx >= 0) {
-              if (conflictMode === "doUpdate" && conflictUpdateSet) {
-                mem.kb_sections[idx] = { ...mem.kb_sections[idx], ...conflictUpdateSet };
-              }
-              inserted.push(mem.kb_sections[idx]);
-            } else {
-              mem.kb_sections.push(row);
-              inserted.push(row);
-            }
+            const s = { plan: "pro", generationsUsed: 0, credits: 999, updatedAt: new Date(), ...existing, ...row };
+            mem.sessions.set(row.id, s);
+            inserted.push(s);
           } else {
-            (mem[tableName] as any[]).push(row);
+            mem.generations.push(row);
             inserted.push(row);
           }
         }
-
         return inserted;
       };
-
       return execute().then(onfulfilled, onrejected);
     },
   };
-
   return builder;
 }
 
-function createUpdateBuilder(table: any) {
+function createMockUpdate(table: any, real?: any) {
   let updateSet: any = null;
   let whereCond: any = null;
 
@@ -365,13 +267,13 @@ function createUpdateBuilder(table: any) {
     },
     then(onfulfilled: (res: any) => any, onrejected?: (err: any) => any) {
       const execute = async () => {
-        if (realDb) {
+        if (real) {
           try {
-            let q = realDb.update(table).set(updateSet);
+            let q = real.update(table).set(updateSet);
             if (whereCond) q = q.where(whereCond);
             return await q.returning();
           } catch (err) {
-            console.warn("[AI Studio] Postgres update failed; falling back to in-memory:", err);
+            console.warn("[Postgres] update note:", (err as Error).message);
           }
         }
 
@@ -379,17 +281,11 @@ function createUpdateBuilder(table: any) {
         const updated: any[] = [];
 
         if (tableName === "sessions") {
-          for (const [id, session] of mem.sessions.entries()) {
+          for (const session of mem.sessions.values()) {
             if (rowMatches(session, whereCond)) {
               for (const [k, v] of Object.entries(updateSet)) {
                 if (k === "generationsUsed") {
                   session.generationsUsed = (session.generationsUsed || 0) + 1;
-                } else if (k === "credits") {
-                  if (typeof v === "number") {
-                    session.credits = v;
-                  } else {
-                    session.credits = Math.max(0, (session.credits || 0) - 1);
-                  }
                 } else {
                   session[k] = v;
                 }
@@ -399,28 +295,23 @@ function createUpdateBuilder(table: any) {
             }
           }
         } else {
-          const list = (mem[tableName] as any[]) || [];
-          for (const row of list) {
+          for (const row of mem.generations) {
             if (rowMatches(row, whereCond)) {
               Object.assign(row, updateSet);
               updated.push(row);
             }
           }
         }
-
         return updated;
       };
-
       return execute().then(onfulfilled, onrejected);
     },
   };
-
   return builder;
 }
 
-function createDeleteBuilder(table: any) {
+function createMockDelete(table: any, real?: any) {
   let whereCond: any = null;
-
   const builder: any = {
     where(cond: any) {
       whereCond = cond;
@@ -428,16 +319,15 @@ function createDeleteBuilder(table: any) {
     },
     then(onfulfilled: (res: any) => any, onrejected?: (err: any) => any) {
       const execute = async () => {
-        if (realDb) {
+        if (real) {
           try {
-            let q = realDb.delete(table);
+            let q = real.delete(table);
             if (whereCond) q = q.where(whereCond);
             return await q;
           } catch (err) {
-            console.warn("[AI Studio] Postgres delete failed; falling back to in-memory:", err);
+            console.warn("[Postgres] delete note:", (err as Error).message);
           }
         }
-
         const tableName = resolveTableName(table);
         if (tableName === "sessions") {
           if (!whereCond) mem.sessions.clear();
@@ -447,49 +337,89 @@ function createDeleteBuilder(table: any) {
             }
           }
         } else {
-          if (!whereCond) mem[tableName] = [];
-          else {
-            mem[tableName] = (mem[tableName] as any[]).filter((row) => !rowMatches(row, whereCond));
-          }
+          if (!whereCond) mem.generations = [];
+          else mem.generations = mem.generations.filter((row) => !rowMatches(row, whereCond));
         }
-
         return [];
       };
-
       return execute().then(onfulfilled, onrejected);
     },
   };
-
   return builder;
 }
 
-export const db: any = {
-  select(fields?: any) {
-    return createSelectBuilder(fields);
-  },
-  insert(table: any) {
-    return createInsertBuilder(table);
-  },
-  update(table: any) {
-    return createUpdateBuilder(table);
-  },
-  delete(table: any) {
-    return createDeleteBuilder(table);
-  },
-  async execute() {
-    return { rows: [{ "?column?": 1 }] };
-  },
-  query: new Proxy(
-    {},
-    {
-      get: () => ({
-        findMany: async () => [],
-        findFirst: async () => null,
-        findUnique: async () => null,
-        create: async (d: any) => d?.data ?? {},
-        update: async (d: any) => d?.data ?? {},
-        delete: async () => ({}),
-      }),
+/**
+ * Lazy database getter.
+ * Initializes Neon Postgres pool and Drizzle client ONLY when invoked,
+ * ensuring Next.js static build steps never fail when DATABASE_URL is missing.
+ */
+export function getDb() {
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (databaseUrl && !dbInstance) {
+    try {
+      const useSsl = databaseUrl.includes("sslmode=require") || databaseUrl.includes("neon.tech");
+      poolInstance = new Pool({
+        connectionString: databaseUrl,
+        connectionTimeoutMillis: 5000,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+      });
+      dbInstance = drizzle(poolInstance, { schema });
+      bootstrapTables(poolInstance).catch(() => {});
+    } catch (err) {
+      console.warn("[AI Studio] Lazy Postgres connection failed; using in-memory store:", err);
+    }
+  }
+
+  const real = dbInstance;
+
+  return {
+    select(fields?: any) {
+      return createMockSelect(fields, real);
     },
-  ),
-};
+    insert(table: any) {
+      return createMockInsert(table, real);
+    },
+    update(table: any) {
+      return createMockUpdate(table, real);
+    },
+    delete(table: any) {
+      return createMockDelete(table, real);
+    },
+    async execute(query?: any) {
+      if (poolInstance) {
+        try {
+          return await poolInstance.query("SELECT 1");
+        } catch {}
+      }
+      return { rows: [{ "?column?": 1 }] };
+    },
+    query: new Proxy(
+      {},
+      {
+        get: () => ({
+          findMany: async () => [],
+          findFirst: async () => null,
+          findUnique: async () => null,
+          create: async (d: any) => d?.data ?? {},
+          update: async (d: any) => d?.data ?? {},
+          delete: async () => ({}),
+        }),
+      },
+    ),
+  };
+}
+
+/**
+ * Lazy proxy export for backward compatibility with `import { db } from "@/db"`.
+ */
+export const db: any = new Proxy(
+  {},
+  {
+    get: (_, prop) => {
+      const active = getDb();
+      const val = (active as any)[prop];
+      return typeof val === "function" ? val.bind(active) : val;
+    },
+  },
+);
